@@ -8,7 +8,7 @@ DATA_FILE = 'creative_codes_db.csv'
 USER_FILE = 'users_db.csv'
 COUNTRY_FILE = 'countries_db.csv' 
 
-# Emojili Varsayılan Kullanıcılar (Baş harfler büyük, kalanı küçük)
+# Emojili Varsayılan Kullanıcılar
 INITIAL_USERS = [
     "🦁 Talha", "🦅 Emir", "🌸 Aslı", "✨ Ilgın", "💎 Duru", 
     "🎨 Ebru", "🎸 Özgün"
@@ -35,10 +35,7 @@ reset_users = False
 if not os.path.exists(USER_FILE):
     reset_users = True
 else:
-    # Eski dosya varsa ve içinde Özgün yoksa veya format bozuksa resetleyelim mi?
-    # Şimdilik sadece "Özgün" yoksa listeyi yenile diyoruz.
     existing_users = pd.read_csv(USER_FILE)['Isim'].tolist()
-    # String kontrolü (listede sayı vs varsa patlamasın diye str() kullandık)
     if not any("Özgün" in str(u) for u in existing_users):
          reset_users = True
 
@@ -59,7 +56,6 @@ def get_users():
 
 def add_new_user(name):
     if name:
-        # Sadece baş harfleri büyük yap (Title Case) -> "🦁 Talha"
         name = name.strip().title()
         df_users = pd.read_csv(USER_FILE)
         if name not in df_users['Isim'].values:
@@ -71,7 +67,7 @@ def add_new_user(name):
 
 def update_user_name(old_name, new_name):
     if os.path.exists(USER_FILE) and new_name:
-        new_name = new_name.strip().title() # Güncellerken de düzeltelim
+        new_name = new_name.strip().title() 
         df = pd.read_csv(USER_FILE)
         if old_name in df['Isim'].values:
             df.loc[df['Isim'] == old_name, 'Isim'] = new_name
@@ -80,10 +76,8 @@ def update_user_name(old_name, new_name):
     return False
 
 def delete_user(name_to_delete):
-    """Kullanıcıyı siler."""
     if os.path.exists(USER_FILE):
         df = pd.read_csv(USER_FILE)
-        # Silinecek isim dışındakileri al
         df = df[df['Isim'] != name_to_delete]
         df.to_csv(USER_FILE, index=False)
         return True
@@ -103,7 +97,7 @@ def add_new_country(code):
             df_c = pd.concat([df_c, new_row], ignore_index=True)
             df_c.to_csv(COUNTRY_FILE, index=False)
 
-# --- NUMARA BAZLI SAYAÇ MANTIĞI ---
+# --- DÜZELTİLEN MANTIK (ORJ -> ALT1 GEÇİŞİ) ---
 def get_scenario_number(scenario_str):
     if pd.isna(scenario_str): return None
     match = re.search(r'(\d+)$', str(scenario_str))
@@ -111,40 +105,55 @@ def get_scenario_number(scenario_str):
         return match.group(1) 
     return None
 
-def get_next_alt_number(scenario_input):
+def get_next_alt_info(scenario_input):
+    """
+    Hem en büyük ALT numarasını hem de ORJ var mı bilgisini döndürür.
+    """
     df = pd.read_csv(DATA_FILE)
     target_num = get_scenario_number(scenario_input)
     
-    if not target_num:
-        return 0 
-    
     max_alt = 0
+    found_orj = False # ORJ bulduk mu bayrağı
+    
+    if not target_num:
+        return 0, False
+    
     for index, row in df.iterrows():
         db_scenario = str(row['Senaryo'])
         db_code = str(row['Tam_Kod'])
         db_num = get_scenario_number(db_scenario)
         
+        # Aynı numara ailesinden mi? (TU02 == TUES02)
         if db_num == target_num and "TU" in scenario_input and "TU" in db_scenario:
              parts = db_code.split('_')
              suffix = parts[-1]
-             if suffix.startswith('ALT'):
+             
+             if suffix == 'ORJ':
+                 found_orj = True
+             elif suffix.startswith('ALT'):
                 try:
                     num = int(suffix.replace('ALT', ''))
                     if num > max_alt:
                         max_alt = num
                 except:
                     pass
-    return max_alt
+                    
+    return max_alt, found_orj
 
 def generate_single_code(prefix, scenario):
-    current_max = get_next_alt_number(scenario)
+    current_max, found_orj = get_next_alt_info(scenario)
     df = pd.read_csv(DATA_FILE)
     
-    if current_max == 0:
-        return f"{prefix}_{scenario}_ORJ"
+    # Durum 1: Zaten ALT'lı bir şeyler var (Örn: ALT2), bir fazlasını ver.
+    if current_max > 0:
+        return f"{prefix}_{scenario}_ALT{current_max + 1}"
     
-    next_num = current_max + 1
-    return f"{prefix}_{scenario}_ALT{next_num}"
+    # Durum 2: Hiç ALT yok ama ORJ var. O zaman sıra ALT1'de.
+    if found_orj:
+        return f"{prefix}_{scenario}_ALT1"
+    
+    # Durum 3: Ne ALT var ne ORJ. O zaman bu ilk kayıt.
+    return f"{prefix}_{scenario}_ORJ"
 
 def save_code(user, prefix, scenario, full_code, record_type):
     new_data = {
@@ -213,16 +222,12 @@ with st.sidebar:
     
     current_users = get_users()
     
-    # Eğer liste boşsa (hepsi silindiyse) hata vermesin
     default_selection = current_users[0] if current_users else None
     selected_user = st.pills("Ekip:", current_users, default=default_selection, selection_mode="single")
     
-    # --- PROFİL DÜZENLEME VE SİLME ---
     if selected_user:
         st.markdown("---")
         st.caption("✏️ Seçili Profili Düzenle")
-        
-        # 3 Sütun: Input (Geniş) | Kaydet | Sil (Dar)
         col_edit, col_save, col_del = st.columns([3, 1.5, 1.5])
         
         with col_edit:
@@ -236,7 +241,6 @@ with st.sidebar:
                         st.rerun()
         
         with col_del:
-            # "secondary" tipini CSS ile kırmızı yaptık
             if st.button("🗑️ Sil", type="secondary"):
                 delete_user(selected_user)
                 st.warning("Silindi!")
@@ -244,7 +248,6 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # Yeni Kullanıcı Ekle
     with st.expander("➕ Yeni Kişi Ekle"):
         new_user_name = st.text_input("İsim", placeholder="İsim Yaz")
         if st.button("Listeye Ekle"):
