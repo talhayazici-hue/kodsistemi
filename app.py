@@ -17,7 +17,6 @@ INITIAL_COUNTRIES = ["ES", "PTBR", "VIE", "EN", "RU", "AR", "FR", "TR", "DE", "I
 # --- GOOGLE BAĞLANTISI ---
 @st.cache_resource
 def get_connection():
-    """Bağlantıyı önbelleğe alır, her seferinde tekrar bağlanmaz."""
     try:
         if "gcp_service_account" not in st.secrets: return None
         creds_dict = dict(st.secrets["gcp_service_account"])
@@ -28,10 +27,8 @@ def get_connection():
         return client
     except Exception: return None
 
-# --- VERİ OKUMA (CACHED - HIZLANDIRILMIŞ) ---
-# ttl=5 demek: Veriyi çekince 5 saniye hafızada tut.
-# 5 saniye içinde 100 kere de tıklasan Google'a gitmez, hafızadan verir. Kotayı kurtarır.
-@st.cache_data(ttl=5)
+# --- VERİ OKUMA (HIZLANDIRILMIŞ & GÜVENLİ) ---
+@st.cache_data(ttl=10) # 10 saniye cache
 def get_data(worksheet_name):
     client = get_connection()
     if client:
@@ -51,7 +48,7 @@ def get_data(worksheet_name):
         except: return pd.DataFrame()
     return pd.DataFrame()
 
-# --- VERİ YAZMA (CACHE TEMİZLEMELİ) ---
+# --- VERİ YAZMA ---
 def append_row(worksheet_name, row_data_list):
     client = get_connection()
     if client:
@@ -59,8 +56,7 @@ def append_row(worksheet_name, row_data_list):
             sheet = client.open(SHEET_NAME)
             worksheet = sheet.worksheet(worksheet_name)
             worksheet.append_row(row_data_list)
-            # Veri ekledik, eski hafızayı silelim ki yenisini görsün
-            get_data.clear()
+            get_data.clear() # İşlem bitince cache temizle
             return True
         except Exception as e: st.error(f"Kayıt hatası: {e}")
     return False
@@ -74,7 +70,7 @@ def update_cell_value(worksheet_name, col_name, old_val, new_val):
             cell = worksheet.find(old_val)
             if cell:
                 worksheet.update_cell(cell.row, cell.col, new_val)
-                get_data.clear() # Cache temizle
+                get_data.clear()
                 return True
         except Exception as e: st.error(f"Güncelleme hatası: {e}")
     return False
@@ -88,29 +84,32 @@ def delete_row_by_value(worksheet_name, value):
             cell = worksheet.find(value)
             if cell:
                 worksheet.delete_rows(cell.row)
-                get_data.clear() # Cache temizle
+                get_data.clear()
                 return True
         except Exception as e: st.error(f"Silme hatası: {e}")
     return False
 
-# --- FONKSİYONLAR ---
+# --- FONKSİYONLAR (DÖNGÜ ENGELLEYİCİ MOD) ---
+
 def get_users():
-    if get_connection() is None: return INITIAL_USERS
+    # HATA BURADAYDI: get_users içinde add_new_user çağırıyorduk, o da tekrar get_users çağırıyordu.
+    # ARTIK: Eğer liste boşsa direkt statik listeyi dönüyoruz, yazmaya çalışmıyoruz.
+    
     df = get_data("users")
     if not df.empty and "Isim" in df.columns:
-        # Çift kayıtları temizlemek için set() kullanıp listeye çeviriyoruz
-        unique_users = sorted(list(set(df['Isim'].tolist())))
-        return unique_users
-    
-    # Eğer boşsa ve bağlantı varsa varsayılanları ekle (ama kontrollü)
-    for name in INITIAL_USERS: add_new_user(name)
+        users_list = df['Isim'].tolist()
+        # Boş satırları ve tekrarları temizle
+        unique_users = sorted(list(set([u for u in users_list if str(u).strip() != ""])))
+        if unique_users:
+            return unique_users
+            
     return INITIAL_USERS
 
 def add_new_user(name):
     if name:
         name = name.strip().title()
-        current = get_users()
-        if name not in current: return append_row("users", [name])
+        # Direkt ekle, kontrolü sheet tarafına bırak (Döngüyü kırmak için)
+        return append_row("users", [name])
     return False
 
 def update_user_name(old_name, new_name):
@@ -122,19 +121,17 @@ def update_user_name(old_name, new_name):
 def delete_user(name): return delete_row_by_value("users", name)
 
 def get_countries():
-    if get_connection() is None: return INITIAL_COUNTRIES
     df = get_data("countries")
     if not df.empty and "Kod" in df.columns:
-        return sorted(list(set(df['Kod'].tolist())))
-    
-    for code in INITIAL_COUNTRIES: add_new_country(code)
+        c_list = df['Kod'].tolist()
+        unique_c = sorted(list(set([c for c in c_list if str(c).strip() != ""])))
+        if unique_c: return unique_c
     return INITIAL_COUNTRIES
 
 def add_new_country(code):
     if code:
         code = code.upper()
-        current = get_countries()
-        if code not in current: return append_row("countries", [code])
+        return append_row("countries", [code])
     return False
 
 # --- KOD MANTIĞI ---
@@ -200,9 +197,7 @@ with st.sidebar:
     st.title("👤 Profil Seç")
     current_users = get_users()
     
-    if get_connection() is None:
-        st.error("⚠️ Bağlantı Hatası! Cache Modu Aktif.")
-    
+    # Seçim Kutusu
     default_selection = current_users[0] if current_users else None
     selected_user = st.pills("Ekip:", current_users, default=default_selection, selection_mode="single")
     
@@ -220,89 +215,4 @@ with st.sidebar:
     if get_connection():
         with st.expander("➕ Yeni Kişi Ekle"):
             nn = st.text_input("İsim", placeholder="İsim Yaz")
-            if st.button("Listeye Ekle"): 
-                if add_new_user(nn): st.success("Eklendi!"); time.sleep(0.5); st.rerun()
-
-st.title("🔥 Kreatif Kod Yönetimi (Google Sheets ☁️)")
-
-if not selected_user: st.warning("⚠️ Profil seçiniz."); st.stop()
-st.caption(f"Aktif Kullanıcı: **{selected_user}**")
-tab1, tab2, tab3 = st.tabs(["🆕 Yeni Kreatif", "🌍 Lokalizasyon", "📝 Manuel / Geçmiş Giriş"])
-
-with tab1:
-    c1, c2 = st.columns([2, 1])
-    with c1:
-        st.subheader("1. Ülke Seç")
-        cnts = get_countries()
-        opts = cnts + ["CUSTOM"]
-        sel_p = st.pills("Ülke Kodları", opts, default="ES", selection_mode="single")
-        fin_p = sel_p
-        if sel_p == "CUSTOM":
-            ci = st.text_input("Yeni Ülke (Örn: KZ)").upper()
-            if ci: fin_p = ci
-    with c2:
-        st.subheader("2. Senaryo")
-        sc = st.text_input("Senaryo", value="TU02", help="TU02, TUES02...").upper()
-        st.write(""); st.write("")
-        if st.button("🚀 KODU ÜRET", type="primary", use_container_width=True):
-            if fin_p and sc and fin_p != "CUSTOM":
-                if get_connection():
-                    if sel_p == "CUSTOM": add_new_country(fin_p)
-                    nc = generate_single_code(fin_p, sc)
-                    if save_code(selected_user, fin_p, sc, nc, "YENI"):
-                        st.success(f"✅ {nc}"); st.header(f"`{nc}`")
-                        if sel_p == "CUSTOM": time.sleep(1); st.rerun()
-                else: st.error("Bağlantı yok!")
-            else: st.error("Eksik bilgi.")
-    st.markdown("---"); st.subheader("📜 Geçmiş"); st.dataframe(get_data_by_type("YENI"), use_container_width=True, hide_index=True)
-
-with tab2:
-    st.info("Lokalizasyon (Çoklu Ülke)")
-    c1, c2 = st.columns([1, 2])
-    with c1: ref = st.text_input("Ref Kod (EN_TU02_ALT2)")
-    tsc, tsf = "", ""
-    if ref:
-        try: p = ref.split('_'); 
-        except: pass
-        if len(p)>=3: tsc, tsf = p[1], p[-1]; st.caption(f"**{tsc}** | **{tsf}**")
-    st.divider()
-    st.subheader("Hedef Ülkeler")
-    trgs = st.pills("Ülkeler", get_countries(), selection_mode="multi")
-    c1, c2 = st.columns([1, 1])
-    with c1: cust = st.text_input("Listede yoksa?", placeholder="JP")
-    with c2:
-        st.write(""); st.write("")
-        if st.button("🌍 KAYDET", type="primary", use_container_width=True):
-            if tsc and tsf:
-                ft = list(trgs) if trgs else []
-                if cust: cl = cust.upper(); ft.append(cl); add_new_country(cl)
-                if not ft: st.error("Ülke seçmedin.")
-                else:
-                    cnt = 0
-                    for c in ft:
-                        fc = f"{c}_{tsc}_{tsf}"
-                        if save_code(selected_user, c, tsc, fc, "LOKAL"): cnt+=1
-                    st.success(f"✅ {cnt} kod eklendi.")
-                    if cust: time.sleep(1); st.rerun()
-            else: st.error("Ref kod eksik.")
-    st.markdown("---"); st.subheader("🌍 Geçmiş"); st.dataframe(get_data_by_type("LOKAL"), use_container_width=True, hide_index=True)
-
-with tab3:
-    st.warning("Manuel Giriş")
-    c1, c2 = st.columns([2, 1])
-    with c1: man = st.text_input("Tam Kod", placeholder="ES_TU81_ALT22")
-    with c2:
-        st.write(""); st.write("")
-        if st.button("💾 EKLE", type="primary", use_container_width=True):
-            if man:
-                try:
-                    p = man.split('_')
-                    if len(p)>=3:
-                        mp, ms, mf = p[0].upper(), p[1].upper(), man.upper()
-                        add_new_country(mp)
-                        save_code(selected_user, mp, ms, mf, "MANUEL")
-                        st.success(f"✅ {mf} eklendi!"); time.sleep(1); st.rerun()
-                    else: st.error("Format hatalı")
-                except: st.error("Hata")
-            else: st.error("Boş girme")
-    st.markdown("---"); st.subheader("📝 Geçmiş"); st.dataframe(get_data_by_type("MANUEL"), use_container_width=True, hide_index=True)
+            if st.button("Listeye Ekle"):
